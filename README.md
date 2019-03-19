@@ -1,0 +1,1 @@
+Telegram client bot walking on all chats, take a links of chats and channels and joins it.
