@@ -3,8 +3,6 @@ import logging
 import re
 from logging import Logger
 import sys
-from asyncio import sleep
-from datetime import datetime
 from typing import List, Tuple
 
 from socks import SOCKS5
@@ -13,9 +11,9 @@ from telethon.errors import UserAlreadyParticipantError
 from telethon.events import NewMessage
 from telethon.tl.custom import Forward
 from telethon.tl.functions.channels import JoinChannelRequest, GetFullChannelRequest
-from telethon.tl.functions.messages import ImportChatInviteRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest, GetBotCallbackAnswerRequest
 from telethon.tl.patched import Message
-from telethon.tl.types import Channel
+from telethon.tl.types import Channel, InputChannel, User
 from telethon.tl.types.messages import ChatFull
 
 from config import APP_API_HASH, APP_API_ID, PHONE_NUMBER
@@ -36,10 +34,10 @@ async def delete_read_messages(client: TelegramClient, logger: Logger):
 
 def extract_link_entities(message_text: str) -> Tuple[List[str], List[str]]:
     user_names = re.findall(r'@[^\s]+\b', message_text)
-    user_names.extend(re.findall(r'(?<=https:\/\/t.me\/)[^\s]+\b', message_text))
+    user_names.extend(re.findall(r'(?<=https:\/\/t.me\/)[\w]+', message_text))
     user_names = list(filter(lambda x: not x.startswith('joinchat/'), user_names))  # пока такой костыль
 
-    invite_hashes = re.findall(r'(?<=https://t\.me\/joinchat\/)[^\s]+\b', message_text)  # https://t.me/joinchat/A6Fntkc1XV4l3_IzENINAQ
+    invite_hashes = re.findall(r'(?<=https://t\.me\/joinchat\/)[\w]+\b', message_text)  # https://t.me/joinchat/A6Fntkc1XV4l3_IzENINAQ
 
     return user_names, invite_hashes
 
@@ -47,12 +45,16 @@ def extract_link_entities(message_text: str) -> Tuple[List[str], List[str]]:
 async def join_public_chats_and_channels(client, user_names):
     for user_name in user_names:
         entity: Channel = await client.get_entity(user_name)
-        entity_full: ChatFull = await client(GetFullChannelRequest(entity))
+        await asyncio.sleep(1)
+        if isinstance(entity, InputChannel):
+            entity_full: ChatFull = await client(GetFullChannelRequest(entity))
 
-        usernames, invite_hashes = extract_link_entities(entity_full.full_chat.about)
+            usernames, invite_hashes = extract_link_entities(entity_full.full_chat.about)
 
-        await join_private_chats_and_channels(client, invite_hashes)
-        await join_public_chats_and_channels(client, usernames)
+            await join_private_chats_and_channels(client, invite_hashes)
+            await asyncio.sleep(1)
+            await join_public_chats_and_channels(client, usernames)
+            await asyncio.sleep(1)
 
         await client(JoinChannelRequest(entity))
 
@@ -71,11 +73,31 @@ async def join_forward_author(client: TelegramClient, forward: Forward):
         await client(JoinChannelRequest(input_entity))
 
 
+async def handle_antibot(client: TelegramClient, event: NewMessage.Event):
+    # for @Cyberdyne_Systems_bot
+    sender: User = event.message.sender
+    message: Message = event.message
+    if sender.username == 'Cyberdyne_Systems_bot':
+        # GetBotCallbackAnswerRequest
+        rows = message.reply_markup.rows
+        if rows[0].buttons[0].text == 'Идём':
+            passed_button_number = 0
+        else:
+            passed_button_number = 1
+
+        await client(GetBotCallbackAnswerRequest(message.chat, message.id,
+                                                 data=message.reply_markup.rows[0].buttons[passed_button_number].data))
+
+
 async def main(client: TelegramClient) -> None:
     await client.start()
 
     @client.on(NewMessage)
-    async def my_event_handler(event: NewMessage.Event):
+    async def new_message_handler(event: NewMessage.Event):
+        # TODO сделать обход
+
+        if event.message.is_reply:
+            await handle_antibot(client, event)
 
         if event.message.forward:
             await join_forward_author(client, event.message.forward)
@@ -84,7 +106,6 @@ async def main(client: TelegramClient) -> None:
 
         await join_public_chats_and_channels(client, user_names)
         await join_private_chats_and_channels(client, invite_hashes)
-
 
     await client.run_until_disconnected()
 
