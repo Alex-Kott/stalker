@@ -13,7 +13,7 @@ from telethon.tl.custom import Forward
 from telethon.tl.functions.channels import JoinChannelRequest, GetFullChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest, GetBotCallbackAnswerRequest
 from telethon.tl.patched import Message
-from telethon.tl.types import Channel, InputChannel, User
+from telethon.tl.types import Channel, InputChannel, User, InputPeerChannel
 from telethon.tl.types.messages import ChatFull
 
 from config import APP_API_HASH, APP_API_ID, PHONE_NUMBER
@@ -33,42 +33,56 @@ async def delete_read_messages(client: TelegramClient, logger: Logger):
 
 
 def extract_link_entities(message_text: str) -> Tuple[List[str], List[str]]:
-    user_names = re.findall(r'@[^\s]+\b', message_text)
+    user_names = re.findall(r'\B@[^\s]+\b', message_text)
     user_names.extend(re.findall(r'(?<=https:\/\/t.me\/)[\w]+', message_text))
-    user_names = list(filter(lambda x: not x.startswith('joinchat/'), user_names))  # пока такой костыль
+    user_names = list(filter(lambda x: not x.startswith('joinchat'), user_names))  # пока такой костыль
 
-    invite_hashes = re.findall(r'(?<=https://t\.me\/joinchat\/)[\w]+\b', message_text)  # https://t.me/joinchat/A6Fntkc1XV4l3_IzENINAQ
+    invite_hashes = re.findall(r'(?<=https://t\.me\/joinchat\/)[\w-]+\b', message_text)  # https://t.me/joinchat/A6Fntkc1XV4l3_IzENINAQ
 
     return user_names, invite_hashes
 
 
 async def join_public_chats_and_channels(client, user_names):
     for user_name in user_names:
-        entity: Channel = await client.get_entity(user_name)
+        try:
+            entity: Channel = await client.get_entity(user_name)
+        except Exception as e:
+            print(e, user_name)
+            continue
+
         await asyncio.sleep(1)
-        if isinstance(entity, InputChannel):
+        if isinstance(entity, InputChannel) or isinstance(entity, InputPeerChannel) or isinstance(entity, Channel):
             entity_full: ChatFull = await client(GetFullChannelRequest(entity))
 
             usernames, invite_hashes = extract_link_entities(entity_full.full_chat.about)
 
+            await asyncio.sleep(1)
             await join_private_chats_and_channels(client, invite_hashes)
             await asyncio.sleep(1)
             await join_public_chats_and_channels(client, usernames)
             await asyncio.sleep(1)
 
-        await client(JoinChannelRequest(entity))
+            await client(JoinChannelRequest(entity))
+        else:
+            print(f"Not joined: {user_name}, type {type(entity)}")
+
+        await asyncio.sleep(1)
 
 
 async def join_private_chats_and_channels(client: TelegramClient, hashes: List[str]):
     for _hash in hashes:
+        await asyncio.sleep(1)
         try:
-            await client(JoinChannelRequest(_hash))
+            await client(ImportChatInviteRequest(_hash))
+            await asyncio.sleep(1)
         except UserAlreadyParticipantError:
             pass
 
 
 async def join_forward_author(client: TelegramClient, forward: Forward):
+    await asyncio.sleep(1)
     input_entity = await forward.get_input_chat()
+    await asyncio.sleep(1)
     if input_entity:
         await client(JoinChannelRequest(input_entity))
 
@@ -103,6 +117,7 @@ async def main(client: TelegramClient) -> None:
             await join_forward_author(client, event.message.forward)
 
         user_names, invite_hashes = extract_link_entities(event.message.text)
+        print(user_names)
 
         await join_public_chats_and_channels(client, user_names)
         await join_private_chats_and_channels(client, invite_hashes)
